@@ -32,9 +32,9 @@ public class PBD : MonoBehaviour {
     private static float wQH = KPOLY * (H * H - deltaQMag * deltaQMag) * (H * H - deltaQMag * deltaQMag) * (H * H - deltaQMag * deltaQMag);
 
     // Used for bounds of the box
-    public float rangex = 20f;
-    public float rangey = 500f;
-    public float rangez = 10f;
+    public float rangex = 30f;
+    public float rangey = 30f;
+    public float rangez = 30f;
 
     public float time = 0;
     public bool dropped = false;
@@ -67,6 +67,10 @@ public class PBD : MonoBehaviour {
 
         Render();
         
+    }
+
+    void OnDrawGizmos() {
+        Gizmos.DrawWireCube(new Vector3(rangex, rangey, rangez)/2, new Vector3(rangex, rangey, rangez));
     }
 
     void Render() {
@@ -180,9 +184,9 @@ public class PBD : MonoBehaviour {
 
     void CreateWater() {
         if (!random_start) {
-            for (int i = 3; i < 8; i++) {
-                for (int j = 15; j < 250; j++) {
-                    for (int k = 3; k < 6; k++) {
+            for (int i = 1; i < 30; i++) {
+                for (int j = 10; j < 30; j++) {
+                    for (int k = 1; k < 10; k++) {
                         particles.Add(new Particle(new Vector3(i, j, k), 1f));
                     }
                 }
@@ -374,14 +378,14 @@ public class PBD : MonoBehaviour {
         return x < min || x >= max;
     }
 
-    private void DropParticles() {
-        for (int i = 25; i < 34; i++) {
-            for (int j = 15; j < 50; j++) {
-                for (int k = 0; k < 5; k++) {
-                    particles.Add(new Particle(new Vector3(i, j, k), 1f));
-                }
-            }
-        }
-    }
+    //private void DropParticles() {
+    //    for (int i = 25; i < 34; i++) {
+    //        for (int j = 15; j < 50; j++) {
+    //            for (int k = 0; k < 5; k++) {
+    //                particles.Add(new Particle(new Vector3(i, j, k), 1f));
+    //            }
+    //        }
+    //    }
+    //}
 }
 

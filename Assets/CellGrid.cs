@@ -38,6 +38,7 @@ public class CellGrid {
         }
     }
 
+    // 粒子位置のセルに、自身を追加する
     public void updateCells(List<Particle> particles) {
         clearCells();
         foreach (Particle p in particles) {

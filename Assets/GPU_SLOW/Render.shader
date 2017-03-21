@@ -5,7 +5,7 @@
 	}
 
 	SubShader{
-		ZWrite On
+		ZWrite Off
 		Blend SrcAlpha OneMinusSrcAlpha
 
 		Pass{

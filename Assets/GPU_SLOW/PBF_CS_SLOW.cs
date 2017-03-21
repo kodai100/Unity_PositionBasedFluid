@@ -150,7 +150,7 @@ namespace GPU_SLOW {
             if (!random_start) {
                 for (int i = 1; i < 30; i++) {
                     for (int j = 10; j < 30; j++) {
-                        for (int k = 1; k < 20; k++) {
+                        for (int k = 1; k < 10; k++) {
                             particles.Add(new Particle(new Vector3(i, j, k), 1f));
                         }
                     }

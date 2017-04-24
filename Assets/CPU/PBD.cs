@@ -23,7 +23,7 @@ namespace CPU_PBD {
 
         // Epsilon used in lambda calculation / See Macklin part 3
         private static float EPSILON_LAMBDA = 150f;
-        private static float C = 0.01f;
+        private static float C = 0.01f; // Typically 0.01
 
         // K and deltaQMag used in sCorr Calculation /  See Macklin part 4
         private static float EPSILON_VORTICITY = 10f;

@@ -1,0 +1,459 @@
+﻿#pragma kernel BuildGridCS
+#pragma kernel ClearGridIndicesCS
+#pragma kernel BuildGridIndicesCS
+#pragma kernel RearrangeParticlesCS
+#pragma kernel CopyBuffer
+#pragma kernel Update
+#pragma kernel CalcLambda
+#pragma kernel CalcDeltaP
+#pragma kernel ApplyDeltaP
+#pragma kernel UpdateVelocity
+
+#define SIMULATION_BLOCK_SIZE 32
+
+struct Particle {
+	float2 oldPos;
+	float2 newPos;
+	float2 velocity;
+	float2 force;
+	float2 deltaP;
+	float mass;
+	float lambda;
+	float pConstraint;
+};
+
+struct StartEnd {
+	uint start;
+	uint end;
+};
+
+int _NumParticles;
+float2 _Gravity;
+float _DT;
+float _H;
+float _KPoly;
+float _Spiky;
+float _Visc;
+float _RestDensity;
+float _EpsilonLambda;
+float _C;
+float _EpsilonVorticity;
+float _K;
+float _DeltaQMag;
+float _WQH;
+float2 _Range;
+
+float2 _GridDim;
+float _GridH;
+
+StructuredBuffer<Particle>	_ParticlesBufferRead;
+RWStructuredBuffer<Particle> _ParticlesBufferWrite;
+
+StructuredBuffer  <uint2> _GridBufferRead;
+RWStructuredBuffer<uint2> _GridBufferWrite;
+
+StructuredBuffer  <StartEnd> _GridIndicesBufferRead;
+RWStructuredBuffer<StartEnd> _GridIndicesBufferWrite;
+
+// -----------------------------------------------------------
+// Grid
+// -----------------------------------------------------------
+
+// returns 2d index of grid from particle position
+float2 GridCalculateCell(float2 pos) {
+	return pos / _GridH;
+}
+
+uint GridKey(uint2 xy) {
+	return xy.x + xy.y * _GridDim.x;
+}
+
+uint2 MakeKeyValuePair(uint2 xy, uint value) {
+	// uint2([GridHash], [ParticleID]) 
+	return uint2(GridKey(xy), value);	// 逆?
+}
+
+uint GridGetKey(uint2 pair) {
+	return pair.x;
+}
+
+uint GridGetValue(uint2 pair) {
+	return pair.y;
+}
+
+//--------------------------------------------------------------------------------------
+// Build Grid : 各パーティクルの属するセルを計算し、紐づけてGridBufferに保存
+//--------------------------------------------------------------------------------------
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void BuildGridCS(uint3 DTid : SV_DispatchThreadID) {
+	const unsigned int P_ID = DTid.x;	// Particle ID to operate on
+
+	float2 position = _ParticlesBufferRead[P_ID].oldPos;
+	float2 grid_xy = GridCalculateCell(position);
+
+	_GridBufferWrite[P_ID] = MakeKeyValuePair((uint2)grid_xy, P_ID);
+}
+
+
+//--------------------------------------------------------------------------------------
+// Build Grid Indices : ソート済みのパーティクルハッシュに対して、始まりと終わりを記録
+//--------------------------------------------------------------------------------------
+// 0000011111122222334444 を
+//       0 1  2  3  4
+// start 0 5  11 16 18
+// end   4 10 15 17 21
+// に変換
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void ClearGridIndicesCS(uint3 DTid : SV_DispatchThreadID) {
+	// グリッドの個数分
+	StartEnd tmp;
+	tmp.start = 0;
+	tmp.end = 0;
+	_GridIndicesBufferWrite[DTid.x] = tmp;
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void BuildGridIndicesCS(uint3 DTid : SV_DispatchThreadID) {
+	// パーティクルの個数分
+	const unsigned int P_ID = DTid.x;	// Grid ID to operate on
+	unsigned int P_ID_PREV = (P_ID == 0) ? (uint)_NumParticles : P_ID; P_ID_PREV--;	// 前のグリッド
+	unsigned int P_ID_NEXT = P_ID + 1; if (P_ID_NEXT == (uint)_NumParticles) { P_ID_NEXT = 0; }	// 後のグリッド
+
+	unsigned int cell = GridGetKey(_GridBufferRead[P_ID]);				// ソートされたグリッドIDの取得
+	unsigned int cell_prev = GridGetKey(_GridBufferRead[P_ID_PREV]);
+	unsigned int cell_next = GridGetKey(_GridBufferRead[P_ID_NEXT]);
+
+	// 前後セルインデックスと異なる場合記録
+	if (cell != cell_prev) {
+		// 新しいセルインデックスの始まりの配列インデックス
+		_GridIndicesBufferWrite[cell].start = P_ID;
+	}
+
+	if (cell != cell_next) {
+		// 新しいセルインデックスの終わりの配列インデックス
+		_GridIndicesBufferWrite[cell].end = P_ID + 1;	// +1????
+	}
+}
+
+
+//--------------------------------------------------------------------------------------
+// Rearrange Particles
+//--------------------------------------------------------------------------------------
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void RearrangeParticlesCS(uint3 DTid : SV_DispatchThreadID) {
+	const unsigned int ID = DTid.x; // Particle ID to operate on
+	const unsigned int G_ID = GridGetValue(_GridBufferRead[ID]);
+	_ParticlesBufferWrite[ID] = _ParticlesBufferRead[G_ID];	// ソート済みに並び替える
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void CopyBuffer(uint3 DTid : SV_DispatchThreadID) {
+	uint id = DTid.x;
+	_ParticlesBufferWrite[id] = _ParticlesBufferRead[id];
+}
+
+// -----------------------------------------------------------
+// Position Update
+// -----------------------------------------------------------
+bool OutOfRange(float x, float min, float max) {
+	return x < min || x >= max;
+}
+
+float ClampedConstraint(float x, float max) {
+	if (x < 0) {
+		return 0;
+	}
+	else if (x >= max) {
+		return max - 1e-3f;
+	}
+	else {
+		return x;
+	}
+}
+
+void ImposeConstraints(uint id) {
+	// ボックスから出た場合、速度調整
+	if (OutOfRange(_ParticlesBufferWrite[id].newPos.x, 0, _Range.x)) {
+		_ParticlesBufferWrite[id].velocity.x = 0;
+	}
+
+	if (OutOfRange(_ParticlesBufferWrite[id].newPos.y, 0, _Range.y)) {
+		_ParticlesBufferWrite[id].velocity.y = 0;
+	}
+
+	// 位置修正
+	_ParticlesBufferWrite[id].newPos.x = ClampedConstraint(_ParticlesBufferWrite[id].newPos.x, _Range.x);
+	_ParticlesBufferWrite[id].newPos.y = ClampedConstraint(_ParticlesBufferWrite[id].newPos.y, _Range.y);
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE,1,1)]
+void Update (uint3 DTid : SV_DispatchThreadID) {
+
+	uint id = DTid.x;
+
+	_ParticlesBufferWrite[id].force = _Gravity;
+
+	// 速度更新 vi = vi + delta T * fext
+	_ParticlesBufferWrite[id].velocity = _ParticlesBufferRead[id].velocity + _ParticlesBufferWrite[id].force * _DT;	// forceは更新済みの為writeを使う
+
+	// 新規位置*の予測 x* = xi + delta T * vi
+	_ParticlesBufferWrite[id].newPos = _ParticlesBufferRead[id].oldPos + _ParticlesBufferWrite[id].velocity * _DT;
+
+	// ボックスから出ないよう速度と位置を修正
+	ImposeConstraints(id);
+}
+
+
+// -----------------------------------------------------------
+// Calc Lambda
+// -----------------------------------------------------------
+float WPoly6(float2 pi, float2 pj) {
+	float2 r = pi - pj;
+	float rLen = length(r);
+	if (rLen > _H || rLen == 0) {
+		return 0;
+	}
+	return (float)(_KPoly * pow((_H * _H - rLen * rLen), 3));
+}
+
+float2 WSpiky(float2 pi, float2 pj) {
+	float2 r = pi - pj;
+	float rLen = length(r);
+	if (rLen > _H || rLen == 0) {
+		return float2(0,0);
+	}
+
+	float coeff = (_H - rLen) * (_H - rLen);
+	coeff *= _Spiky;
+	coeff /= rLen;
+	return r * (-1 * coeff);
+}
+
+float2 WViscosity(float2 pi, float2 pj) {
+	float2 r = pi - pj;
+	float rLen = length(r);
+	if (rLen > _H || rLen == 0) return float2(0,0);
+
+	float coeff = (-1 * (rLen * rLen * rLen)) / (2 * (_H * _H * _H));
+	coeff += (length(r) * length(r) / (_H * _H));
+	coeff += (_H / (2 * rLen)) - 1;
+	return r * coeff;
+}
+
+float CalcDensityConstraint(uint id) {
+	float sum = 0;
+
+	uint2 G_XYZ = (uint2)GridCalculateCell(_ParticlesBufferWrite[id].oldPos);
+	for (int Y = 0; Y <_GridDim.y; Y++) {
+		for (int X = 0; X < _GridDim.x; X++) {
+			unsigned int G_CELL = GridKey(uint2(X, Y));
+			StartEnd G_START_END = _GridIndicesBufferRead[G_CELL];
+			for (unsigned int N_ID = G_START_END.start; N_ID < G_START_END.end; N_ID++) {
+				float2 N_position = _ParticlesBufferRead[N_ID].newPos;
+				float2 r = _ParticlesBufferWrite[id].newPos - N_position;
+				float rLen = length(r);
+				// Neighbor
+				if (rLen < _H) {
+					sum += _ParticlesBufferWrite[id].mass * WPoly6(_ParticlesBufferWrite[id].newPos, N_position);
+				}
+			}
+		}
+	}
+
+	return (sum / _RestDensity) - 1;
+}
+
+float Lambda(uint id) {
+	float densityConstraint = CalcDensityConstraint(id);
+	float2 gradientI = float2(0,0);
+	float sumGradients = 0;
+
+	// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	uint2 G_XYZ = (uint2)GridCalculateCell(_ParticlesBufferWrite[id].oldPos);
+	for (int Y = 0; Y <_GridDim.y; Y++) {
+		for (int X = 0; X < _GridDim.x; X++) {
+			unsigned int G_CELL = GridKey(uint2(X, Y));
+			StartEnd G_START_END = _GridIndicesBufferRead[G_CELL];
+			for (unsigned int N_ID = G_START_END.start; N_ID < G_START_END.end; N_ID++) {
+				float2 N_position = _ParticlesBufferRead[N_ID].newPos;
+				float2 r = _ParticlesBufferWrite[id].newPos - N_position;
+				float rLen = length(r);
+				// Neighbor
+				if (rLen < _H) {
+					float2 gradientJ = WSpiky(_ParticlesBufferWrite[id].newPos, N_position) / _RestDensity;
+					sumGradients += length(gradientJ) * length(gradientJ);
+					gradientI += gradientJ;
+				}
+			}
+		}
+	}
+
+	sumGradients += length(gradientI) * length(gradientI);
+	return (-1 * densityConstraint) / (sumGradients + _EpsilonLambda);
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void CalcLambda(uint DTid : SV_DispatchThreadID) {
+	uint id = DTid.x;
+	_ParticlesBufferWrite[id].lambda = Lambda(id);
+}
+
+
+// -----------------------------------------------------------
+// Calc DeltaP
+// -----------------------------------------------------------
+float SCorr(uint idi, uint idj) {
+	// Get Density from WPoly6 and divide by constant from paper
+	float corr = WPoly6(_ParticlesBufferWrite[idi].newPos, _ParticlesBufferWrite[idj].newPos) / _WQH;
+	// take to power of 4
+	corr *= corr * corr * corr;
+	return -_K * corr;
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void CalcDeltaP(uint DTid : SV_DispatchThreadID) {
+	uint id = DTid.x;
+
+	float2 deltaP = float2(0,0);
+
+
+	uint2 G_XYZ = (uint2)GridCalculateCell(_ParticlesBufferWrite[id].oldPos);
+	for (int Y = 0; Y <_GridDim.y; Y++) {
+		for (int X = 0; X < _GridDim.x; X++) {
+			unsigned int G_CELL = GridKey(uint2(X, Y));
+			StartEnd G_START_END = _GridIndicesBufferRead[G_CELL];
+			for (unsigned int N_ID = G_START_END.start; N_ID < G_START_END.end; N_ID++) {
+				float2 N_position = _ParticlesBufferRead[N_ID].newPos;
+				float2 r = _ParticlesBufferWrite[id].newPos - N_position;
+				float rLen = length(r);
+				// Neighbor
+				if (rLen < _H) {
+					float lambdaSum = _ParticlesBufferWrite[id].lambda + _ParticlesBufferWrite[N_ID].lambda;    // 近傍粒子とのラムダの和
+					float sCorr = SCorr(id, N_ID);
+					deltaP += WSpiky(_ParticlesBufferWrite[id].newPos, _ParticlesBufferWrite[N_ID].newPos) * (lambdaSum + sCorr);
+				}
+			}
+		}
+	}
+
+	_ParticlesBufferWrite[id].deltaP = deltaP / _RestDensity;
+}
+
+
+// -----------------------------------------------------------
+// apply DeltaP
+// -----------------------------------------------------------
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void ApplyDeltaP(uint DTid : SV_DispatchThreadID) {
+	uint id = DTid.x;
+	_ParticlesBufferWrite[id].newPos += _ParticlesBufferWrite[id].deltaP;
+}
+
+
+// -----------------------------------------------------------
+// Update Velocity
+// -----------------------------------------------------------
+float2 Vorticity(uint id) {
+	float2 vorticity = float2(0,0);
+	float2 velocityDiff;
+	float2 gradient;
+
+	uint2 G_XYZ = (uint2)GridCalculateCell(_ParticlesBufferWrite[id].oldPos);
+	for (int Y = 0; Y <_GridDim.y; Y++) {
+		for (int X = 0; X < _GridDim.x; X++) {
+			unsigned int G_CELL = GridKey(uint2(X, Y));
+			StartEnd G_START_END = _GridIndicesBufferRead[G_CELL];
+			for (unsigned int N_ID = G_START_END.start; N_ID < G_START_END.end; N_ID++) {
+				float2 N_position = _ParticlesBufferRead[N_ID].newPos;
+				float2 r = _ParticlesBufferWrite[id].newPos - N_position;
+				float rLen = length(r);
+				// Neighbor
+				if (rLen < _H) {
+					velocityDiff = _ParticlesBufferWrite[id].velocity - _ParticlesBufferWrite[N_ID].velocity;		// ??
+					gradient = WViscosity(_ParticlesBufferWrite[id].newPos, _ParticlesBufferWrite[N_ID].newPos);	// ??
+					vorticity += cross(float3(velocityDiff, 0), float3(gradient, 0)).xy;  //??
+				}
+			}
+		}
+	}
+
+	return vorticity;
+}
+
+float2 Eta(uint id, float vorticityMag) {
+	float2 eta = float2(0,0);
+
+	uint2 G_XYZ = (uint2)GridCalculateCell(_ParticlesBufferWrite[id].oldPos);
+	for (int Y = 0; Y <_GridDim.y; Y++) {
+		for (int X = 0; X < _GridDim.x; X++) {
+			unsigned int G_CELL = GridKey(uint2(X, Y));
+			StartEnd G_START_END = _GridIndicesBufferRead[G_CELL];
+			for (unsigned int N_ID = G_START_END.start; N_ID < G_START_END.end; N_ID++) {
+				float2 N_position = _ParticlesBufferRead[N_ID].newPos;
+				float2 r = _ParticlesBufferWrite[id].newPos - N_position;
+				float rLen = length(r);
+				// Neighbor
+				if (rLen < _H) {
+					eta += WViscosity(_ParticlesBufferWrite[id].newPos, _ParticlesBufferWrite[N_ID].newPos) * vorticityMag;
+				}
+			}
+		}
+	}
+
+	return eta;
+}
+
+float2 VorticityForce(uint id) {
+	float2 vorticity = Vorticity(id);
+	if (length(vorticity) == 0) {
+		return float2(0,0);
+	}
+	float2 eta = Eta(id, length(vorticity));
+	float2 n = normalize(eta);
+	return cross(float3(n,0), float3(vorticity,0)).xy * _EpsilonVorticity;
+}
+
+float2 XsphViscosity(uint id) {
+	float2 visc = float2(0,0);
+
+	uint2 G_XYZ = (uint2)GridCalculateCell(_ParticlesBufferWrite[id].oldPos);
+	for (int Y = 0; Y <_GridDim.y; Y++) {
+		for (int X = 0; X < _GridDim.x; X++) {
+			unsigned int G_CELL = GridKey(uint2(X, Y));
+			StartEnd G_START_END = _GridIndicesBufferRead[G_CELL];
+			for (unsigned int N_ID = G_START_END.start; N_ID < G_START_END.end; N_ID++) {
+				float2 N_position = _ParticlesBufferRead[N_ID].newPos;
+				float2 r = _ParticlesBufferWrite[id].newPos - N_position;
+				float rLen = length(r);
+				// Neighbor
+				if (rLen < _H) {
+					float2 velocityDiff = _ParticlesBufferWrite[N_ID].newPos - _ParticlesBufferWrite[id].newPos;
+					velocityDiff *= WPoly6(_ParticlesBufferWrite[id].newPos, _ParticlesBufferWrite[N_ID].newPos);
+				}
+			}
+		}
+	}
+
+	return visc *= _C;
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void UpdateVelocity(uint DTid : SV_DispatchThreadID) {
+	uint id = DTid.x;
+
+	ImposeConstraints(id);
+
+	_ParticlesBufferWrite[id].velocity = (_ParticlesBufferWrite[id].newPos - _ParticlesBufferWrite[id].oldPos) / _DT;
+
+	_ParticlesBufferWrite[id].velocity += VorticityForce(id) * _DT;
+
+	_ParticlesBufferWrite[id].velocity += XsphViscosity(id);
+
+
+
+	// update position xi = x*i
+	_ParticlesBufferWrite[id].oldPos = _ParticlesBufferWrite[id].newPos;
+}
+

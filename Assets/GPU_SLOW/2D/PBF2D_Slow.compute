@@ -1,0 +1,294 @@
+﻿#pragma kernel CopyBuffer
+#pragma kernel Update
+#pragma kernel CalcLambda
+#pragma kernel CalcDeltaP
+#pragma kernel ApplyDeltaP
+#pragma kernel UpdateVelocity
+
+#define SIMULATION_BLOCK_SIZE 256
+
+struct Particle {
+	float2 oldPos;
+	float2 newPos;
+	float2 velocity;
+	float2 force;
+	float2 deltaP;
+	float mass;
+	float lambda;
+	float pConstraint;
+};
+
+int _NumParticles;
+float2 _Gravity;
+float _DT;
+float _H;
+float _KPoly;
+float _Spiky;
+float _Visc;
+float _RestDensity;
+float _EpsilonLambda;
+float _C;
+float _EpsilonVorticity;
+float _K;
+float _DeltaQMag;
+float _WQH;
+float2 _Range;
+
+StructuredBuffer<Particle>	_ParticlesBufferRead;
+RWStructuredBuffer<Particle> _ParticlesBufferWrite;
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void CopyBuffer(uint3 DTid : SV_DispatchThreadID) {
+	uint id = DTid.x;
+	_ParticlesBufferWrite[id] = _ParticlesBufferRead[id];
+}
+
+
+// -----------------------------------------------------------
+// Position Update
+// -----------------------------------------------------------
+bool OutOfRange(float x, float min, float max) {
+	return x < min || x >= max;
+}
+
+float ClampedConstraint(float x, float max) {
+	if (x < 0) {
+		return 0;
+	}
+	else if (x >= max) {
+		return max - 1e-3f;
+	}
+	else {
+		return x;
+	}
+}
+
+void ImposeConstraints(uint id) {
+	// ボックスから出た場合、速度調整
+	if (OutOfRange(_ParticlesBufferWrite[id].newPos.x, 0, _Range.x)) {
+		_ParticlesBufferWrite[id].velocity.x = 0;
+	}
+
+	if (OutOfRange(_ParticlesBufferWrite[id].newPos.y, 0, _Range.y)) {
+		_ParticlesBufferWrite[id].velocity.y = 0;
+	}
+
+	// 位置修正
+	_ParticlesBufferWrite[id].newPos.x = ClampedConstraint(_ParticlesBufferWrite[id].newPos.x, _Range.x);
+	_ParticlesBufferWrite[id].newPos.y = ClampedConstraint(_ParticlesBufferWrite[id].newPos.y, _Range.y);
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE,1,1)]
+void Update (uint3 DTid : SV_DispatchThreadID) {
+
+	uint id = DTid.x;
+
+	_ParticlesBufferWrite[id].force = _Gravity;
+
+	// 速度更新 vi = vi + delta T * fext
+	_ParticlesBufferWrite[id].velocity = _ParticlesBufferRead[id].velocity + _ParticlesBufferWrite[id].force * _DT;	// forceは更新済みの為writeを使う
+
+	// 新規位置*の予測 x* = xi + delta T * vi
+	_ParticlesBufferWrite[id].newPos = _ParticlesBufferRead[id].oldPos + _ParticlesBufferWrite[id].velocity * _DT;
+
+	// ボックスから出ないよう速度と位置を修正
+	ImposeConstraints(id);
+}
+
+
+// -----------------------------------------------------------
+// Calc Lambda
+// -----------------------------------------------------------
+float WPoly6(float2 pi, float2 pj) {
+	float2 r = pi - pj;
+	float rLen = length(r);
+	if (rLen > _H || rLen == 0) {
+		return 0;
+	}
+	return (float)(_KPoly * pow((_H * _H - rLen * rLen), 3));
+}
+
+float2 WSpiky(float2 pi, float2 pj) {
+	float2 r = pi - pj;
+	float rLen = length(r);
+	if (rLen > _H || rLen == 0) {
+		return float2(0,0);
+	}
+
+	float coeff = (_H - rLen) * (_H - rLen);
+	coeff *= _Spiky;
+	coeff /= rLen;
+	return r * (-1 * coeff);
+}
+
+float2 WViscosity(float2 pi, float2 pj) {
+	float2 r = pi - pj;
+	float rLen = length(r);
+	if (rLen > _H || rLen == 0) return float2(0,0);
+
+	float coeff = (-1 * (rLen * rLen * rLen)) / (2 * (_H * _H * _H));
+	coeff += (length(r) * length(r) / (_H * _H));
+	coeff += (_H / (2 * rLen)) - 1;
+	return r * coeff;
+}
+
+float CalcDensityConstraint(uint id) {
+	float sum = 0;
+	for (int j = 0; j < _NumParticles; j++) {
+		float2 r = _ParticlesBufferWrite[id].newPos - _ParticlesBufferWrite[j].newPos;
+		float rLen = length(r);
+		// Neighbor
+		if (rLen < _H) {
+			sum += _ParticlesBufferWrite[id].mass * WPoly6(_ParticlesBufferWrite[id].newPos, _ParticlesBufferWrite[j].newPos);
+		}
+	}
+
+	return (sum / _RestDensity) - 1;
+}
+
+float Lambda(uint id) {
+	float densityConstraint = CalcDensityConstraint(id);
+	float2 gradientI = float2(0,0);
+	float sumGradients = 0;
+
+	for (int j = 0; j < _NumParticles; j++) {
+		float2 r = _ParticlesBufferWrite[id].newPos - _ParticlesBufferWrite[j].newPos;
+		float rLen = length(r);
+		// Neighbor
+		if (rLen < _H) {
+			float2 gradientJ = WSpiky(_ParticlesBufferWrite[id].newPos, _ParticlesBufferWrite[j].newPos) / _RestDensity;
+			sumGradients += length(gradientJ) * length(gradientJ);
+			gradientI += gradientJ;
+		}
+	}
+
+	sumGradients += length(gradientI) * length(gradientI);
+	return (-1 * densityConstraint) / (sumGradients + _EpsilonLambda);
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void CalcLambda(uint DTid : SV_DispatchThreadID) {
+	uint id = DTid.x;
+	_ParticlesBufferWrite[id].lambda = Lambda(id);
+}
+
+
+// -----------------------------------------------------------
+// Calc DeltaP
+// -----------------------------------------------------------
+float SCorr(uint idi, uint idj) {
+	// Get Density from WPoly6 and divide by constant from paper
+	float corr = WPoly6(_ParticlesBufferWrite[idi].newPos, _ParticlesBufferWrite[idj].newPos) / _WQH;
+	// take to power of 4
+	corr *= corr * corr * corr;
+	return -_K * corr;
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void CalcDeltaP(uint DTid : SV_DispatchThreadID) {
+	uint id = DTid.x;
+
+	float2 deltaP = float2(0,0);
+
+	for (int j = 0; j < _NumParticles; j++) {
+		float2 r = _ParticlesBufferWrite[id].newPos - _ParticlesBufferWrite[j].newPos;
+		float rLen = length(r);
+		// Neighbor
+		if (rLen < _H) {
+			float lambdaSum = _ParticlesBufferWrite[id].lambda + _ParticlesBufferWrite[j].lambda;    // 近傍粒子とのラムダの和
+			float sCorr = SCorr(id, j);
+			deltaP += WSpiky(_ParticlesBufferWrite[id].newPos, _ParticlesBufferWrite[j].newPos) * (lambdaSum + sCorr);
+		}
+	}
+
+	_ParticlesBufferWrite[id].deltaP = deltaP / _RestDensity;
+}
+
+
+// -----------------------------------------------------------
+// apply DeltaP
+// -----------------------------------------------------------
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void ApplyDeltaP(uint DTid : SV_DispatchThreadID) {
+	uint id = DTid.x;
+	_ParticlesBufferWrite[id].newPos += _ParticlesBufferWrite[id].deltaP;
+}
+
+
+// -----------------------------------------------------------
+// Update Velocity
+// -----------------------------------------------------------
+float2 Vorticity(uint id) {
+	float2 vorticity = float2(0,0);
+	float2 velocityDiff;
+	float2 gradient;
+
+	for (int j = 0; j < _NumParticles; j++) {
+		float2 r = _ParticlesBufferWrite[id].newPos - _ParticlesBufferWrite[j].newPos;
+		float rLen = length(r);
+		// Neighbor
+		if (rLen < _H) {
+			velocityDiff = _ParticlesBufferWrite[id].velocity - _ParticlesBufferWrite[j].velocity;		// ??
+			gradient = WViscosity(_ParticlesBufferWrite[id].newPos, _ParticlesBufferWrite[j].newPos);	// ??
+			vorticity += cross(float3(velocityDiff, 0), float3(gradient, 0)).xy;  //??
+		}
+	}
+
+	return vorticity;
+}
+
+float2 Eta(uint id, float vorticityMag) {
+	float2 eta = float2(0,0);
+	for (int j = 0; j < _NumParticles; j++) {
+		float2 r = _ParticlesBufferWrite[j].newPos - _ParticlesBufferWrite[id].newPos;
+		float rLen = length(r);
+		// Neighbor
+		if (rLen < _H) {
+			eta += WViscosity(_ParticlesBufferWrite[id].newPos, _ParticlesBufferWrite[j].newPos) * vorticityMag;
+		}
+	}
+	return eta;
+}
+
+float2 VorticityForce(uint id) {
+	float2 vorticity = Vorticity(id);
+	if (length(vorticity) == 0) {
+		return float2(0,0);
+	}
+	float2 eta = Eta(id, length(vorticity));
+	float2 n = normalize(eta);
+	return cross(float3(n,0), float3(vorticity,0)).xy * _EpsilonVorticity;
+}
+
+float2 XsphViscosity(uint id) {
+	float2 visc = float2(0,0);
+	for (int j = 0; j < _NumParticles; j++) {
+		float2 r = _ParticlesBufferWrite[id].newPos - _ParticlesBufferWrite[j].newPos;
+		float rLen = length(r);
+		// Neighbor
+		if (rLen < _H) {
+			float2 velocityDiff = _ParticlesBufferWrite[j].newPos - _ParticlesBufferWrite[id].newPos;
+			velocityDiff *= WPoly6(_ParticlesBufferWrite[id].newPos, _ParticlesBufferWrite[j].newPos);
+		}
+	}
+	return visc *= _C;
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void UpdateVelocity(uint DTid : SV_DispatchThreadID) {
+	uint id = DTid.x;
+
+	ImposeConstraints(id);
+
+	_ParticlesBufferWrite[id].velocity = (_ParticlesBufferWrite[id].newPos - _ParticlesBufferWrite[id].oldPos) / _DT;
+
+	_ParticlesBufferWrite[id].velocity += VorticityForce(id) * _DT;
+
+	_ParticlesBufferWrite[id].velocity += XsphViscosity(id);
+
+
+
+	// update position xi = x*i
+	_ParticlesBufferWrite[id].oldPos = _ParticlesBufferWrite[id].newPos;
+}
+

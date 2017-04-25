@@ -1,4 +1,4 @@
-﻿Shader "Custom/PBF2D_GPU" {
+﻿Shader "Custom/PBF2D_GPU_TUB" {
 	Properties{
 		_MainTex("Texture", 2D) = "white" {}
 		_ParticleRad("ParticleRadius", Range(0.01, 1)) = 0.05
@@ -22,6 +22,7 @@
 			float _ParticleRad;
 
 			struct Particle {
+				bool wall;
 				float2 oldPos;
 				float2 newPos;
 				float2 velocity;
@@ -46,6 +47,7 @@
 				output.tex = float2(0, 0);
 				// output.col = float4(0.5 + normalize(_Particles[id].velocity) / 2, 0.5, 1);
 				output.col = float4(1,1,1, 1);
+				if (_Particles[id].wall) output.col = float4(1,0,0,1);
 				return output;
 			}
 

@@ -1,6 +1,6 @@
 ﻿using UnityEngine;
 
-namespace PBF_GPU_SLOW_2D {
+namespace PBF_GPU_SLOW_2D_TUB {
 
     public class Renderer : MonoBehaviour {
 

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using System.Runtime.InteropServices;
 
-namespace PBF_GPU_SLOW_2D {
+namespace PBF_GPU_SLOW_2D_TUB {
     public class PBF : MonoBehaviour {
 
         List<Particle> particles = new List<Particle>();
@@ -70,7 +70,7 @@ namespace PBF_GPU_SLOW_2D {
         }
 
         void OnDrawGizmos() {
-            Gizmos.DrawWireCube(range / 2, range);
+            // Gizmos.DrawWireCube(range / 2, range);
         }
 
         #endregion MonoBehaviour
@@ -153,15 +153,40 @@ namespace PBF_GPU_SLOW_2D {
         }
 
         void CreateWater() {
-            if (!random_start) {
-                for (int i = 1; i < range.x / 2; i++) {
-                    for (int j = (int)(range.y / 4); j < range.y - 1; j++) {
-                        particles.Add(new Particle(new Vector2(i, j), 1f));
-                    }
+            
+            // 液体
+            for (int i = 0; i < 10000; i++) {
+                particles.Add(new Particle(false, new Vector2((float)range.x / 4 + Random.value * (float)range.x/2, range.y / 4 + Random.value * (float)range.y*2), 1));
+            }
+
+            // 壁
+            int num_layer = 5;
+            float radius = 0.2f;
+            float diameter = radius * 2;
+            Vector3 pos = new Vector3(0, 0, 0);
+
+            int num_height = (int)(range.y / diameter);
+            int num_width = (int)(range.x / diameter);
+
+            // 下の壁
+            for (int l = 0; l < num_layer; l++) {
+                for (int i = 0; i < num_width; i++) {
+                    particles.Add(new Particle(true, new Vector2(i * diameter + radius, -diameter * l - radius), 1));
                 }
-            } else {
-                for (int i = 0; i < 30000; i++) {
-                    particles.Add(new Particle(new Vector2(Random.value * (float)range.x/2, Random.value * (float)range.y), 1));
+            }
+
+            // 左の壁
+            for (int l = 0; l < num_layer; l++) {
+                for (int i = 0; i < num_height; i++) {
+                    particles.Add(new Particle(true, new Vector2(diameter * l + radius, i * diameter + radius), 1));
+                }
+            }
+
+            // 右の壁
+            for (int l = 0; l < num_layer; l++) {
+                for (int i = 0; i < num_height; i++) {
+                    Vector2 pivot = new Vector2((num_width - num_layer) * diameter, pos.y);
+                    particles.Add(new Particle(true, pivot + new Vector2(diameter * l + radius, i * diameter + radius), 1));
                 }
             }
 
@@ -188,6 +213,7 @@ namespace PBF_GPU_SLOW_2D {
 
 
     struct Particle {
+        public bool wall;
         public Vector2 oldPos;
         public Vector2 newPos;
         public Vector2 velocity;
@@ -197,7 +223,8 @@ namespace PBF_GPU_SLOW_2D {
         public float lambda;
         public float pConstraint;
 
-        public Particle(Vector2 pos, float mass) {
+        public Particle(bool wall, Vector2 pos, float mass) {
+            this.wall = wall;
             this.oldPos = pos;
             this.mass = mass;
             this.lambda = 0;

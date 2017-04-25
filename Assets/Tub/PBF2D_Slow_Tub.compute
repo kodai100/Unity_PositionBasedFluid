@@ -8,6 +8,7 @@
 #define SIMULATION_BLOCK_SIZE 256
 
 struct Particle {
+	bool wall;
 	float2 oldPos;
 	float2 newPos;
 	float2 velocity;
@@ -43,7 +44,6 @@ void CopyBuffer(uint3 DTid : SV_DispatchThreadID) {
 	_ParticlesBufferWrite[id] = _ParticlesBufferRead[id];
 }
 
-
 // -----------------------------------------------------------
 // Position Update
 // -----------------------------------------------------------
@@ -51,37 +51,15 @@ bool OutOfRange(float x, float min, float max) {
 	return x < min || x >= max;
 }
 
-float ClampedConstraint(float x, float max) {
-	if (x < 0) {
-		return 0;
-	}
-	else if (x >= max) {
-		return max - 1e-3f;
-	}
-	else {
-		return x;
-	}
-}
-
-void ImposeConstraints(uint id) {
-	// ボックスから出た場合、速度調整
-	if (OutOfRange(_ParticlesBufferWrite[id].newPos.x, 0, _Range.x)) {
-		_ParticlesBufferWrite[id].velocity.x = 0;
-	}
-
-	if (OutOfRange(_ParticlesBufferWrite[id].newPos.y, 0, _Range.y)) {
-		_ParticlesBufferWrite[id].velocity.y = 0;
-	}
-
-	// 位置修正
-	_ParticlesBufferWrite[id].newPos.x = ClampedConstraint(_ParticlesBufferWrite[id].newPos.x, _Range.x);
-	_ParticlesBufferWrite[id].newPos.y = ClampedConstraint(_ParticlesBufferWrite[id].newPos.y, _Range.y);
-}
-
 [numthreads(SIMULATION_BLOCK_SIZE,1,1)]
 void Update (uint3 DTid : SV_DispatchThreadID) {
 
 	uint id = DTid.x;
+
+	if (_ParticlesBufferRead[id].wall) {
+		_ParticlesBufferWrite[id].newPos = _ParticlesBufferRead[id].oldPos;
+		return;
+	}
 
 	_ParticlesBufferWrite[id].force = _Gravity;
 
@@ -91,8 +69,6 @@ void Update (uint3 DTid : SV_DispatchThreadID) {
 	// 新規位置*の予測 x* = xi + delta T * vi
 	_ParticlesBufferWrite[id].newPos = _ParticlesBufferRead[id].oldPos + _ParticlesBufferWrite[id].velocity * _DT;
 
-	// ボックスから出ないよう速度と位置を修正
-	ImposeConstraints(id);
 }
 
 
@@ -169,6 +145,8 @@ float Lambda(uint id) {
 [numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
 void CalcLambda(uint DTid : SV_DispatchThreadID) {
 	uint id = DTid.x;
+	if (_ParticlesBufferRead[id].wall) return;
+
 	_ParticlesBufferWrite[id].lambda = Lambda(id);
 }
 
@@ -187,6 +165,7 @@ float SCorr(uint idi, uint idj) {
 [numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
 void CalcDeltaP(uint DTid : SV_DispatchThreadID) {
 	uint id = DTid.x;
+	if (_ParticlesBufferRead[id].wall) return;
 
 	float2 deltaP = float2(0,0);
 
@@ -277,8 +256,7 @@ float2 XsphViscosity(uint id) {
 [numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
 void UpdateVelocity(uint DTid : SV_DispatchThreadID) {
 	uint id = DTid.x;
-
-	ImposeConstraints(id);
+	if (_ParticlesBufferRead[id].wall) return;
 
 	_ParticlesBufferWrite[id].velocity = (_ParticlesBufferWrite[id].newPos - _ParticlesBufferWrite[id].oldPos) / _DT;
 

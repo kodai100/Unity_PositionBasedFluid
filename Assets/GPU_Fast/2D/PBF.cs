@@ -163,14 +163,6 @@ namespace PBF_GPU_FAST_2D {
 
             Uint2[] a = new Uint2[maxParticleNum];
             gridBuffer.GetData(a);
-            //string str = "";
-            //string str2 = "";
-            //for (int i = 0; i < maxParticleNum; i++) {
-            //    str += a[i].x + ",";
-            //    str2 += a[i].y + ",";
-            //}
-            //Debug.Log("Grid ID: " + str);
-            //Debug.Log("Particle ID: " + str2);
 
             // -----------------------------------------------------------------
             // Sort Grid : グリッドインデックス順に粒子インデックスをソートする
@@ -189,16 +181,6 @@ namespace PBF_GPU_FAST_2D {
                 }
             }
             gridBuffer.SetData(a);
-
-            //gridBuffer.GetData(a);
-            //str = "";
-            //str2 = "";
-            //for (int i = 0; i < maxParticleNum; i++) {
-            //    str += a[i].x + ",";
-            //    str2 += a[i].y + ",";
-            //}
-            //Debug.Log("Sorted Grid ID: " + str);
-            //Debug.Log("Sorted Particle ID: " + str2);
 
             // -----------------------------------------------------------------
             // Build Grid Indices : グリッドの開始終了インデックスを格納

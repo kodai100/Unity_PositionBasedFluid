@@ -46,8 +46,8 @@
 				output.pos = float4(_Particles[id].oldPos, 0, 1);
 				output.tex = float2(0, 0);
 				// output.col = float4(0.5 + normalize(_Particles[id].velocity) / 2, 0.5, 1);
-				// output.col = float4(1,1,1, 1);
-				output.col = float4(0.7 + 0.3 *_Particles[id].velocity, 0.7,1);
+				 output.col = float4(1,1,1, 1);
+				// output.col = float4(0.7 + 0.3 *_Particles[id].velocity, 0.7,1);
 				return output;
 			}
 

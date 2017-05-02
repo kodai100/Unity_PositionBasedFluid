@@ -271,7 +271,8 @@ namespace PBF_GPU_FAST_2D {
         void CreateWater() {
             
             for (int i = 0; i < maxParticleNum; i++) {
-                particles.Add(new Particle(new Vector2(Random.value * range.x / 2, Random.value * Mathf.Min(range.y, 256)), 1));
+                //particles.Add(new Particle(range/2 + Random.insideUnitCircle * range.x/2, 1));
+                particles.Add(new Particle(new Vector2(Random.value * range.x, Random.value * Mathf.Min(range.y/4, 256)), 1));
             }
             
 

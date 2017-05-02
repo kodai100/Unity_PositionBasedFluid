@@ -20,7 +20,7 @@ namespace PBF_GPU_FAST_2D {
         
         void Update() {
             time += Time.deltaTime;
-            script.range.x = initialRangeX - initialRangeX * waveStrength * Mathf.Sin(speed * time);
+            script.range.x = (initialRangeX - waveStrength) - waveStrength * Mathf.Sin(speed * (time-5f));
         }
     }
 

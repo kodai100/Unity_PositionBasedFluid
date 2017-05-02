@@ -8,6 +8,7 @@ namespace PBF_GPU_FAST_2D {
 
         List<Particle> particles = new List<Particle>();
         Particle[] particle_array;
+
         [SerializeField]int maxParticleNum;
         public enum Mode {
             NUM_8K, NUM_16K, NUM_32K, NUM_65K, NUM_130K, NUM_260K
@@ -17,11 +18,10 @@ namespace PBF_GPU_FAST_2D {
         public bool showGrid = false;
 
         public Vector2 GRAVITY = new Vector2(0f, -9.8f);
-        public int PRESSURE_ITERATIONS = 2;
+        public int PRESSURE_ITERATIONS = 4;
         public float dt = 0.005f;
-        public Vector2 GridDim = new Vector2(100,100);
-        public Vector2 range = new Vector2(30, 30);
-        public bool random_start = false;
+        public Vector2 GridDim = new Vector2(64,64);
+        public Vector2 range = new Vector2(256, 256);
 
         #region GPU
         public ComputeShader PBF_CS;
@@ -271,7 +271,7 @@ namespace PBF_GPU_FAST_2D {
         void CreateWater() {
             
             for (int i = 0; i < maxParticleNum; i++) {
-                particles.Add(new Particle(new Vector2(Random.value * (float)range.x/2, Random.value * (float)range.y), 1));
+                particles.Add(new Particle(new Vector2(Random.value * range.x / 2, Random.value * Mathf.Min(range.y, 256)), 1));
             }
             
 

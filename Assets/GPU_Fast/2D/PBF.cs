@@ -9,6 +9,12 @@ namespace PBF_GPU_FAST_2D {
         List<Particle> particles = new List<Particle>();
         Particle[] particle_array;
         [SerializeField]int maxParticleNum;
+        public enum Mode {
+            NUM_8K, NUM_16K, NUM_32K, NUM_65K, NUM_130K, NUM_260K
+        }
+        public Mode num;
+
+        public bool showGrid = false;
 
         public Vector2 GRAVITY = new Vector2(0f, -9.8f);
         public int PRESSURE_ITERATIONS = 2;
@@ -59,8 +65,33 @@ namespace PBF_GPU_FAST_2D {
             wQH = KPOLY * (H * H - deltaQMag * deltaQMag) * (H * H - deltaQMag * deltaQMag) * (H * H - deltaQMag * deltaQMag);
             gridH = range.x / GridDim.x;
 
-            CreateWater();
+            switch (num) {
+                case Mode.NUM_8K:
+                    maxParticleNum = 8192;
+                    break;
+                case Mode.NUM_16K:
+                    maxParticleNum = 16384;
+                    break;
+                case Mode.NUM_32K:
+                    maxParticleNum = 32768;
+                    break;
+                case Mode.NUM_65K:
+                    maxParticleNum = 65536;
+                    break;
+                case Mode.NUM_130K:
+                    maxParticleNum = 131072;
+                    break;
+                case Mode.NUM_260K:
+                    maxParticleNum = 262144;
+                    break;
+                default:
+                    maxParticleNum = 8192;
+                    break;
+            }
+
             InitializeComputeBuffer();
+            CreateWater();
+            
         }
 
         void Update() {
@@ -97,15 +128,18 @@ namespace PBF_GPU_FAST_2D {
         }
 
         void OnDrawGizmos() {
+
             Gizmos.DrawWireCube(range / 2, range);
 
-            Gizmos.color = Color.blue;
-            for(int i = 1; i<GridDim.y; i++) {
-                Gizmos.DrawLine(new Vector3(0,gridH * i,0), new Vector3(range.x, gridH * i, 0));
-            }
+            if (showGrid) {
+                Gizmos.color = Color.blue;
+                for (int i = 1; i < GridDim.y; i++) {
+                    Gizmos.DrawLine(new Vector3(0, gridH * i, 0), new Vector3(range.x, gridH * i, 0));
+                }
 
-            for (int i = 1; i < GridDim.x; i++) {
-                Gizmos.DrawLine(new Vector3(gridH * i, 0, 0), new Vector3(gridH * i, range.y, 0));
+                for (int i = 1; i < GridDim.x; i++) {
+                    Gizmos.DrawLine(new Vector3(gridH * i, 0, 0), new Vector3(gridH * i, range.y, 0));
+                }
             }
         }
 
@@ -119,14 +153,7 @@ namespace PBF_GPU_FAST_2D {
             sortedParticleBuffer = new ComputeBuffer(maxParticleNum, Marshal.SizeOf(typeof(Particle)));
             gridBuffer = new ComputeBuffer(maxParticleNum, Marshal.SizeOf(typeof(Uint2)));
             gridPingPongBuffer = new ComputeBuffer(maxParticleNum, Marshal.SizeOf(typeof(Uint2)));
-            gridIndicesBuffer = new ComputeBuffer((int)(GridDim.x * GridDim.y), Marshal.SizeOf(typeof(StartEnd)));
-
-
-            particleBufferRead.SetData(particle_array);
-            particleBufferWrite.SetData(particle_array);
-            threadGroupSize = Mathf.CeilToInt(maxParticleNum / SIMULATION_BLOCK_SIZE) + 1;
-
-
+            gridIndicesBuffer = new ComputeBuffer((int)(GridDim.x * GridDim.y), Marshal.SizeOf(typeof(Uint2)));
         }
 
         void PositionBasedFluid() {
@@ -161,26 +188,10 @@ namespace PBF_GPU_FAST_2D {
             PBF_CS.SetBuffer(kernel, "_GridBufferWrite", gridBuffer);
             PBF_CS.Dispatch(kernel, threadGroupSize, 1, 1);
 
-            Uint2[] a = new Uint2[maxParticleNum];
-            gridBuffer.GetData(a);
-
             // -----------------------------------------------------------------
             // Sort Grid : グリッドインデックス順に粒子インデックスをソートする
             // -----------------------------------------------------------------
-            // GPUSort(gridBuffer, gridPingPongBuffer);    // TODO ソートされてない??
-
-            for (int i = 0; i < maxParticleNum-1; i++) {
-                // 下から上に順番に比較します
-                for (int j = maxParticleNum - 1; j > i; j--) {
-                    // 上の方が大きいときは互いに入れ替えます
-                    if (a[j].x < a[j - 1].x) {
-                        Uint2 t = a[j];
-                        a[j] = a[j - 1];
-                        a[j - 1] = t;
-                    }
-                }
-            }
-            gridBuffer.SetData(a);
+            GPUSort(gridBuffer, gridPingPongBuffer);    // TODO ソートされてない??
 
             // -----------------------------------------------------------------
             // Build Grid Indices : グリッドの開始終了インデックスを格納
@@ -195,17 +206,7 @@ namespace PBF_GPU_FAST_2D {
             PBF_CS.SetBuffer(kernel, "_GridBufferRead", gridBuffer);
             PBF_CS.SetBuffer(kernel, "_GridIndicesBufferWrite", gridIndicesBuffer);
             PBF_CS.Dispatch(kernel, threadGroupSize, 1, 1);
-
-            //StartEnd[] b = new StartEnd[gridIndicesBuffer.count];
-            //gridIndicesBuffer.GetData(b);
-            //string str3 = "";
-            //string str4 = "";
-            //for (int i = 0; i < gridIndicesBuffer.count; i++) {
-            //    str3 += b[i].start + ",";
-            //    str4 += b[i].end + ",";
-            //}
-            //Debug.Log("Start: " + str3);
-            //Debug.Log("End: " + str4);
+            
 
             //　-----------------------------------------------------------------
             // Rearrange : ソートしたグリッド関連付け配列からパーティクルIDだけを取り出す
@@ -216,7 +217,6 @@ namespace PBF_GPU_FAST_2D {
             PBF_CS.SetBuffer(kernel, "_ParticlesBufferRead", particleBufferRead);
             PBF_CS.SetBuffer(kernel, "_ParticlesBufferWrite", sortedParticleBuffer);
             PBF_CS.Dispatch(kernel, threadGroupSize, 1, 1);
-
             
 
             // Copy Buffer Every Frame
@@ -229,8 +229,9 @@ namespace PBF_GPU_FAST_2D {
             kernel = PBF_CS.FindKernel("Update");
             PBF_CS.SetBuffer(kernel, "_ParticlesBufferRead", sortedParticleBuffer);
             PBF_CS.SetBuffer(kernel, "_ParticlesBufferWrite", particleBufferWrite);
-            PBF_CS.SetBuffer(kernel, "_GridIndicesBuffer", gridIndicesBuffer);
+            //PBF_CS.SetBuffer(kernel, "_GridIndicesBufferRead", gridIndicesBuffer);
             PBF_CS.Dispatch(kernel, threadGroupSize, 1, 1);
+
 
             // Process2 Lambda Iteration
             for (int i = 0; i < PRESSURE_ITERATIONS; i++) {
@@ -239,21 +240,21 @@ namespace PBF_GPU_FAST_2D {
                 kernel = PBF_CS.FindKernel("CalcLambda");
                 PBF_CS.SetBuffer(kernel, "_ParticlesBufferRead", sortedParticleBuffer);
                 PBF_CS.SetBuffer(kernel, "_ParticlesBufferWrite", particleBufferWrite);
-                PBF_CS.SetBuffer(kernel, "_GridIndicesBuffer", gridIndicesBuffer);
+                PBF_CS.SetBuffer(kernel, "_GridIndicesBufferRead", gridIndicesBuffer);
                 PBF_CS.Dispatch(kernel, threadGroupSize, 1, 1);
 
                 // CalcDeltaP
                 kernel = PBF_CS.FindKernel("CalcDeltaP");
                 PBF_CS.SetBuffer(kernel, "_ParticlesBufferRead", sortedParticleBuffer);
                 PBF_CS.SetBuffer(kernel, "_ParticlesBufferWrite", particleBufferWrite);
-                PBF_CS.SetBuffer(kernel, "_GridIndicesBuffer", gridIndicesBuffer);
+                PBF_CS.SetBuffer(kernel, "_GridIndicesBufferRead", gridIndicesBuffer);
                 PBF_CS.Dispatch(kernel, threadGroupSize, 1, 1);
 
                 // ApplyDeltaP
                 kernel = PBF_CS.FindKernel("ApplyDeltaP");
                 PBF_CS.SetBuffer(kernel, "_ParticlesBufferRead", sortedParticleBuffer);
                 PBF_CS.SetBuffer(kernel, "_ParticlesBufferWrite", particleBufferWrite);
-                PBF_CS.SetBuffer(kernel, "_GridIndicesBuffer", gridIndicesBuffer);
+                PBF_CS.SetBuffer(kernel, "_GridIndicesBufferRead", gridIndicesBuffer);
                 PBF_CS.Dispatch(kernel, threadGroupSize, 1, 1);
             }
 
@@ -261,27 +262,23 @@ namespace PBF_GPU_FAST_2D {
             kernel = PBF_CS.FindKernel("UpdateVelocity");
             PBF_CS.SetBuffer(kernel, "_ParticlesBufferRead", sortedParticleBuffer);
             PBF_CS.SetBuffer(kernel, "_ParticlesBufferWrite", particleBufferWrite);
-            PBF_CS.SetBuffer(kernel, "_GridIndicesBuffer", gridIndicesBuffer);
+            PBF_CS.SetBuffer(kernel, "_GridIndicesBufferRead", gridIndicesBuffer);
             PBF_CS.Dispatch(kernel, threadGroupSize, 1, 1);
 
             SwapBuffer(ref particleBufferRead, ref particleBufferWrite);
         }
 
         void CreateWater() {
-            if (!random_start) {
-                for (int i = 1; i < range.x / 2; i++) {
-                    for (int j = (int)(range.y / 4); j < range.y - 1; j++) {
-                        particles.Add(new Particle(new Vector2(i, j), 1f));
-                    }
-                }
-            } else {
-                for (int i = 0; i < 84*84; i++) {
-                    particles.Add(new Particle(new Vector2(Random.value * (float)range.x/2, Random.value * (float)range.y), 1));
-                }
+            
+            for (int i = 0; i < maxParticleNum; i++) {
+                particles.Add(new Particle(new Vector2(Random.value * (float)range.x/2, Random.value * (float)range.y), 1));
             }
+            
 
             particle_array = particles.ToArray();
-            maxParticleNum = particle_array.Length;
+            particleBufferRead.SetData(particle_array);
+            particleBufferWrite.SetData(particle_array);
+            threadGroupSize = maxParticleNum / SIMULATION_BLOCK_SIZE;
         }
 
         void GPUSort(ComputeBuffer inBuffer, ComputeBuffer tempBuffer) {
@@ -361,6 +358,7 @@ namespace PBF_GPU_FAST_2D {
         public float mass;
         public float lambda;
         public float pConstraint;
+        public Vector3 color;
 
         public Particle(Vector2 pos, float mass) {
             this.oldPos = pos;
@@ -371,14 +369,10 @@ namespace PBF_GPU_FAST_2D {
             this.velocity = new Vector2(0f, 0f);
             this.force = new Vector2(0f, 0f);
             this.deltaP = new Vector2(0f, 0f);
+            this.color = new Vector3(1, 1, 1);
         }
     }
-
-    struct StartEnd {
-        public uint start;
-        public uint end;
-    }
-
+    
     struct Uint2 {
         public uint x;
         public uint y;

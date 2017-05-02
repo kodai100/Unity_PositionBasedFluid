@@ -156,7 +156,7 @@ namespace PBF_GPU_SLOW_2D_TUB {
             
             // 液体
             for (int i = 0; i < 10000; i++) {
-                particles.Add(new Particle(false, new Vector2((float)range.x / 4 + Random.value * (float)range.x/2, range.y / 4 + Random.value * (float)range.y*2), 1));
+                particles.Add(new Particle(false, new Vector2((float)range.x / 4 + Random.value * (float)range.x/2, range.y / 10 + Random.value * (float)range.y), 1));
             }
 
             // 壁
